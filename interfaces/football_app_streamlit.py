@@ -13,7 +13,6 @@ import base64
 from config import Config
 from database import FootballDatabase
 from scraper import FootballAPIScraper
-
 # Configuration de la page
 st.set_page_config(
     page_title="⚽ Football Data Scraper Pro",
@@ -270,6 +269,15 @@ elif page == "📥 Scraping":
 
         save_to_db = st.checkbox("💾 Sauvegarder dans la base de données", value=True)
 
+        # Nouveau checkbox pour afficher les données
+        display_data = st.checkbox("👁️ Afficher les données scrapées", value=False)
+
+        # Nouveau: nom du fichier CSV
+        csv_filename = st.text_input(
+            "📝 Nom du fichier CSV (sans extension)",
+            value=f"football_{championship}_{datetime.now().strftime('%Y%m%d')}"
+        )
+
         col1, col2, col3 = st.columns(3)
 
         with col1:
@@ -283,10 +291,23 @@ elif page == "📥 Scraping":
 
                 if result['success']:
                     st.success(f"✅ Scraping réussi!")
-                    if 'matches' in result:
+
+                    # Stocker les résultats dans la session pour affichage et export
+                    if 'matches' in result and result['matches']:
+                        st.session_state['scraped_matches'] = result['matches']
+                        st.session_state['scraped_standings'] = result.get('standings', [])
+
                         st.info(f"📊 {len(result['matches'])} matches récupérés")
                         if 'saved_count' in result:
                             st.info(f"💾 {result['saved_count']} matches sauvegardés")
+
+                        # Si display_data est coché, afficher directement
+                        if display_data:
+                            st.rerun()
+                    else:
+                        st.warning("⚠️ Aucun match trouvé pour cette période")
+                else:
+                    st.error(f"❌ Erreur: {result.get('error', 'Inconnue')}")
 
         with col2:
             if st.button("📅 30 derniers jours", use_container_width=True):
@@ -302,6 +323,12 @@ elif page == "📥 Scraping":
 
                 if result['success']:
                     st.success(f"✅ Scraping des 30 derniers jours réussi!")
+                    if 'matches' in result and result['matches']:
+                        st.session_state['scraped_matches'] = result['matches']
+                        st.session_state['scraped_standings'] = result.get('standings', [])
+
+                        if display_data:
+                            st.rerun()
 
         with col3:
             if st.button("🏆 Saison complète", use_container_width=True):
@@ -313,8 +340,140 @@ elif page == "📥 Scraping":
 
                 if result['success']:
                     st.success(f"✅ Scraping saison complète réussi!")
+                    if 'matches' in result and result['matches']:
+                        st.session_state['scraped_matches'] = result['matches']
+                        st.session_state['scraped_standings'] = result.get('standings', [])
+
+                        if display_data:
+                            st.rerun()
 
         st.markdown('</div>', unsafe_allow_html=True)
+
+    # AFFICHAGE DES DONNÉES SCRAPÉES
+    if display_data and 'scraped_matches' in st.session_state and st.session_state['scraped_matches']:
+        matches = st.session_state['scraped_matches']
+
+        st.markdown("---")
+        st.subheader(f"📋 Données Scrapées ({len(matches)} matches)")
+
+        # Créer un DataFrame
+        df = pd.DataFrame(matches)
+
+        if not df.empty:
+            # Nettoyer et formater les données
+            df['date'] = pd.to_datetime(df['date']).dt.strftime('%Y-%m-%d %H:%M')
+
+            # Créer une colonne score
+            df['score'] = df.apply(
+                lambda x: f"{x['home_score'] or '?'}-{x['away_score'] or '?'}"
+                if pd.notna(x['home_score']) and pd.notna(x['away_score'])
+                else 'VS',
+                axis=1
+            )
+
+            # Colonnes à afficher
+            display_cols = ['date', 'home_team', 'score', 'away_team', 'status', 'matchday', 'venue']
+            display_df = df[display_cols].copy()
+            display_df.columns = ['Date', 'Domicile', 'Score', 'Extérieur', 'Statut', 'Journée', 'Lieu']
+
+            # Afficher le tableau
+            st.dataframe(
+                display_df,
+                use_container_width=True,
+                hide_index=True
+            )
+
+            # BOUTONS D'EXPORT
+            st.subheader("💾 Export des Données")
+
+            col1, col2, col3 = st.columns(3)
+
+            with col1:
+                # Export CSV
+                csv_data = display_df.to_csv(index=False)
+                st.download_button(
+                    label="📥 Télécharger CSV",
+                    data=csv_data,
+                    file_name=f"{csv_filename}.csv",
+                    mime="text/csv",
+                    use_container_width=True
+                )
+
+            with col2:
+                # Export Excel
+                buffer = BytesIO()
+                with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+                    display_df.to_excel(writer, index=False, sheet_name='Matches')
+
+                st.download_button(
+                    label="📊 Télécharger Excel",
+                    data=buffer.getvalue(),
+                    file_name=f"{csv_filename}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True
+                )
+
+            with col3:
+                # Export JSON
+                json_data = display_df.to_json(orient='records', indent=2)
+                st.download_button(
+                    label="📄 Télécharger JSON",
+                    data=json_data,
+                    file_name=f"{csv_filename}.json",
+                    mime="application/json",
+                    use_container_width=True
+                )
+
+            # STATISTIQUES RAPIDES
+            st.subheader("📈 Statistiques Rapides")
+
+            col1, col2, col3, col4 = st.columns(4)
+
+            with col1:
+                finished = sum(1 for m in matches if m.get('status') == 'finished')
+                st.metric("Terminés", finished)
+
+            with col2:
+                scheduled = sum(1 for m in matches if m.get('status') == 'scheduled')
+                st.metric("Programmés", scheduled)
+
+            with col3:
+                total_goals = 0
+                for match in matches:
+                    if match.get('status') == 'finished':
+                        total_goals += (match.get('home_score', 0) or 0) + (match.get('away_score', 0) or 0)
+                st.metric("Buts totaux", total_goals)
+
+            with col4:
+                avg_goals = total_goals / finished if finished > 0 else 0
+                st.metric("Moyenne buts/match", f"{avg_goals:.2f}")
+
+            # Affichage du classement si disponible
+            if 'scraped_standings' in st.session_state and st.session_state['scraped_standings']:
+                st.subheader("📊 Classement Récupéré")
+
+                standings_df = pd.DataFrame(st.session_state['scraped_standings'])
+                if not standings_df.empty:
+                    display_standings_cols = ['position', 'team', 'points', 'played_games',
+                                              'won', 'draw', 'lost', 'goals_for', 'goals_against']
+                    display_standings_df = standings_df[display_standings_cols].copy()
+                    display_standings_df.columns = ['Pos', 'Équipe', 'Pts', 'MJ', 'G', 'N', 'P', 'BP', 'BC']
+
+                    st.dataframe(display_standings_df, use_container_width=True, hide_index=True)
+
+                    # Export du classement
+                    standings_csv = display_standings_df.to_csv(index=False)
+                    st.download_button(
+                        label="📥 Télécharger Classement (CSV)",
+                        data=standings_csv,
+                        file_name=f"{csv_filename}_classement.csv",
+                        mime="text/csv"
+                    )
+        else:
+            st.warning("⚠️ Aucune donnée à afficher")
+
+    elif display_data and ('scraped_matches' not in st.session_state or not st.session_state['scraped_matches']):
+        st.info("👆 Scrapez d'abord des données pour les afficher ici")
 
     # Options avancées
     with st.expander("⚙️ Options avancées"):
@@ -1040,7 +1199,7 @@ st.markdown(
     """
     <div style='text-align: center; color: #666;'>
     <p>⚽ Football Data Scraper Pro • Utilise l'API football-data.org • Développé avec Streamlit</p>
-    <p>Version 1.0 • © 2026</p>
+    <p>Version 1.0 • © 2024</p>
     </div>
     """,
     unsafe_allow_html=True
